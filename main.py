@@ -13,10 +13,14 @@ def main():
     try:
         log(f'Fetcher booted from disk at {dt.datetime.now().astimezone()}')
         while True:
+            with open('last.dat') as file:
+                last = file.readline().strip()
             current = dt.datetime.now().astimezone()
             next_start = current + dt.timedelta(hours=1)
             plog(f'Cycle begun at {current}')
-            comevo.fetch(current)
+            comevo.replace(current, comevo.fetch(current, last))
+            with open('last.dat', 'w') as file:
+                file.write(dt.datetime.strftime(current, '%Y-%m-%dT%H:%M:%S%z') + '\n')
             current = dt.datetime.now().astimezone()
             sleep_interval = (next_start - current).seconds
             if sleep_interval > 0:

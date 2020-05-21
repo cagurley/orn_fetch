@@ -6,25 +6,25 @@ https://github.com/nrccua/file_export_sample
 import datetime as dt
 import json
 import os
+import pyodbc
 import requests
+import sqlite3
 from pathlib import PurePath
 from support import *
 
 
-def fetch(current):
+def fetch(current, last):
     """
     :param current: An aware datetime to be saved after a successful fetch
-    :return: None
+    :param last: An aware datetime string of the form '%Y-%m-%dT%H:%M:%S%z' read from file
+    :return: a string equal to the name of the newly written data file or None if not successful
     """
     try:
-        with open('last.dat') as file:
-            last = file.readline().strip()
-
         if 'HOME' in os.environ:
             hpath = PurePath(os.environ['HOME'])
         else:
             hpath = PurePath(os.environ['HOMEDRIVE'] + os.environ['HOMEPATH'])
-        hpath = hpath.joinpath('.orn_fetch', 'comevo.json')
+        hpath = hpath.joinpath('.orn_fetch', 'api.json')
         with open(hpath) as file:
             hdata = json.load(file)
         if not validate_keys(hdata, ('auth_url',
@@ -36,6 +36,7 @@ def fetch(current):
             raise KeyError('JSON file malformed; provide necessary header data exactly.')
     except (KeyError, OSError, json.JSONDecodeError) as e:
         plog(repr(e))
+        return None
     else:
         try:
             # Login and authorization
@@ -46,65 +47,30 @@ def fetch(current):
             headers['Authorization'] = ' '.join([auth['token_type'], auth['access_token']])
 
             # Request data
-            # session = requests.Session()
-            # session.headers.update(headers)
             log(f"Request for data begun")
             endpoint = hdata['data_url'].replace('{module}', hdata['module'])
-            response = requests.get(f"{endpoint}", headers=headers)
-            # for file in files_to_download:
-                # # Get the file name from the url, unescape it, and then replace whitespace with underscore
-                # filename = urlparse(file)
-                # filename = get_valid_filename(unquote(PurePath(filename.path).name))
-                # download_path = PurePath(hdata['dest_dir']).joinpath(filename)
-                # plog(f"Downloading file from url {file}")
-                # DON'T USE THE SESSION HERE
-                # download_response = requests.get(file, allow_redirects=True, stream=True)
+            params = {
+                'start': dt.datetime.strftime(dt.datetime.strptime(last, '%Y-%m-%dT%H:%M:%S%z'), '%Y-%m-%dT%H:%M:%S'),
+                'timeZone': 'Eastern'
+            }
+            response = requests.get(f"{endpoint}", headers=headers, params=params)
             if response.ok:
-                download_path = PurePath(hdata['dest_dir']).joinpath(f"comevo_{hdata['module']}_{current.strftime('%Y%m%d%H%M%S')}.json")
-                print(f'Writing file to `{download_path}`.')
-                with open(download_path, 'w') as f:
-                    f.write(json.dumps(response.json()['data'], indent=2))
-                    # for chunk in response.iter_content(chunk_size=1024):
-                    #     if chunk:
-                    #         f.write(chunk)
-                log(f'Download to `{download_path}` successful')
+                data = response.json()['data']
+                if data:
+                    if not isinstance(data, list):
+                        data = [data]
+                    download_path = PurePath(hdata['dest_dir']).joinpath(f"comevo_{hdata['module']}_{current.strftime('%Y%m%d%H%M%S')}.json")
+                    print(f'Writing file to `{download_path}`.')
+                    with open(download_path, 'w') as f:
+                        json.dump({'data': data}, f, indent=2)
+                    log(f'Download to `{download_path}` successful')
+                    return download_path
+                else:
+                    log('No records returned; no file created')
+                    return None
             else:
                 raise requests.RequestException(
                     f"There was an error retrieving data with status code {response.status_code}.\n{response.content}")
-            # files_to_download = []
-            # if response_json['files']:
-            #     download_url = f"{hdata['url']}/file"
-            #     for file in response_json['files']:
-            #         download_response_json = session.post(download_url,
-            #                                               data=json.dumps(payload),
-            #                                               params={'filename': file['fileName']}).json()
-            #         if "fileUrl" in download_response_json:
-            #             files_to_download.append(download_response_json["fileUrl"])
-
-            # Download files
-            # if len(files_to_download) == 0:
-            #     log('No undelivered files to download found')
-            # else:
-            #     for file in files_to_download:
-            #         # Get the file name from the url, unescape it, and then replace whitespace with underscore
-            #         filename = urlparse(file)
-            #         filename = get_valid_filename(unquote(PurePath(filename.path).name))
-            #         download_path = PurePath(hdata['dest_dir']).joinpath(filename)
-            #         plog(f"Downloading file from url {file}")
-            #         # DON'T USE THE SESSION HERE
-            #         download_response = requests.get(file, allow_redirects=True, stream=True)
-            #         if download_response.ok:
-            #             print(f"Writing file to {download_path}.")
-            #             with open(download_path, "wb") as f:
-            #                 for chunk in download_response.iter_content(chunk_size=1024):
-            #                     if chunk:
-            #                         f.write(chunk)
-            #             log(f'Download to {download_path} successful')
-            #         else:
-            #             raise requests.RequestException(f"There was an error retrieving {file} with status code {download_response.status_code}.\n{download_response.content}")
-
-            with open('last.dat', 'w') as file:
-                file.write(dt.datetime.strftime(current, '%Y-%m-%dT%H:%M:%S%z') + '\n')
         except (OSError,
                 json.JSONDecodeError,
                 requests.RequestException,
@@ -117,11 +83,95 @@ def fetch(current):
                 requests.Timeout,
                 MissingResponseError) as e:
             plog(repr(e))
-        # finally:
-        #     session.close()
-    finally:
-        return None
+            return None
 
 
-# if __name__ == '__main__':
-#     fetch(dt.datetime.now().astimezone())
+def replace(current, filepath):
+    """
+    :param current: An aware datetime to be saved after a successful fetch
+    :param filepath: Path to downloaded data file for value replacement
+    :return: None
+    """
+    if filepath:
+        try:
+            if 'HOME' in os.environ:
+                hpath = PurePath(os.environ['HOME'])
+            else:
+                hpath = PurePath(os.environ['HOMEDRIVE'] + os.environ['HOMEPATH'])
+            hpath = hpath.joinpath('.orn_fetch', 'connect.json')
+            with open(hpath) as file:
+                hdata = json.load(file)
+            if not validate_keys(hdata, ('driver',
+                                       'host',
+                                       'database',
+                                       'user',
+                                       'password')):
+                raise KeyError('JSON file malformed; provide necessary header data exactly.')
+        except (KeyError, OSError, json.JSONDecodeError) as e:
+            plog(repr(e))
+        else:
+            try:
+                localdb = f"temp_{current.strftime('%Y%m%d%H%M%S')}.db"
+                lconn = sqlite3.connect(localdb)
+
+                # Setup local database
+                lcur = lconn.cursor()
+                lcur.execute('DROP TABLE IF EXISTS main')
+                lconn.commit()
+                lcur.execute("""CREATE TABLE main (id text, val text)""")
+                lconn.commit()
+                lcur.execute('CREATE INDEX m ON main (id, val)')
+                lconn.commit()
+
+                # Retrieve data from SQL Server database
+                log('Database reference begun')
+                with pyodbc.connect(driver=hdata['driver'],
+                                    server=hdata['host'],
+                                    database=hdata['database'],
+                                    uid=hdata['user'],
+                                    pwd=hdata['password']) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""select dbo.toGuidString(fr.[record]) as [id], dv.[value] as [val]
+    from [form.response] as fr
+    inner join [form] as f on fr.[form] = f.[id] and f.[parent] = '8a0187e0-ee53-4ce3-9133-754715f33e9b'
+    inner join [application] as a on fr.[record] = a.[id]
+    inner join [device] as dv on a.[person] = dv.[record] and dv.[type] = 'campus_email' and dv.[rank] = 1
+    where fr.[status] is null
+    and a.[person] not in (select [record] from [tag] where [tag] = 'test')
+    order by 2, 1""")
+                        fc = 0
+                        while True:
+                            rows = cur.fetchmany(500)
+                            if not rows:
+                                break
+                            lcur.executemany('INSERT INTO main VALUES (?, ?)', rows)
+                            lconn.commit()
+                            fc += 1
+                conn.close()
+
+                # Read and replace file data
+                with open(filepath) as f:
+                    data = json.load(f)
+                    for index, entry in enumerate(data['data']):
+                        lcur.execute("select [id] from [main] where [val] = ?", [entry['attributes']['organizationIdValue']])
+                        result = lcur.fetchone()
+                        if result:
+                            data['data'][index]['attributes']['organizationIdValue'] = result[0]
+                with open(filepath, 'w') as f:
+                    json.dump(data, f, indent=2)
+                log('File values replaced')
+
+                # Cleanup local database
+                lcur.execute('DROP TABLE IF EXISTS main')
+                lconn.commit()
+            except pyodbc.DatabaseError as e:
+                conn.close()
+                plog(repr(e))
+            except (OSError, sqlite3.DatabaseError) as e:
+                plog(repr(e))
+            finally:
+                lconn.rollback()
+                lcur.close()
+                lconn.close()
+                os.remove(localdb)
+    return None
