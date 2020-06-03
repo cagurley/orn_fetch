@@ -136,7 +136,7 @@ def replace(current, filepath):
     inner join [form] as f on fr.[form] = f.[id] and f.[parent] = '8a0187e0-ee53-4ce3-9133-754715f33e9b'
     inner join [application] as a on fr.[record] = a.[id]
     inner join [device] as dv on a.[person] = dv.[record] and dv.[type] = 'campus_email' and dv.[rank] = 1
-    where fr.[status] is null
+    where isnull(fr.[status], 'register') in ('register', 'attend')
     and a.[person] not in (select [record] from [tag] where [tag] = 'test')
     order by 2, 1""")
                         fc = 0
