@@ -18,7 +18,12 @@ def main():
             current = dt.datetime.now().astimezone()
             next_start = current + dt.timedelta(hours=1)
             plog(f'Cycle begun at {current}')
-            comevo.replace(current, comevo.fetch(current, last))
+            downloads = comevo.fetch(current, last)
+            if downloads:
+                db_hooks = comevo.init(current)
+                if db_hooks:
+                    comevo.replace(downloads, db_hooks[1])
+                    comevo.end(*db_hooks)
             with open('last.dat', 'w') as file:
                 file.write(dt.datetime.strftime(current, '%Y-%m-%dT%H:%M:%S%z') + '\n')
             current = dt.datetime.now().astimezone()
