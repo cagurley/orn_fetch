@@ -105,10 +105,11 @@ def init(current):
         with open(hpath) as file:
             hdata = json.load(file)
         if not validate_keys(hdata, ('driver',
-                                   'host',
-                                   'database',
-                                   'user',
-                                   'password')):
+                                     'host',
+                                     'database',
+                                     'user',
+                                     'password',
+                                     'templates')):
             raise KeyError('JSON file malformed; provide necessary header data exactly.')
     except (KeyError, OSError, json.JSONDecodeError) as e:
         plog(repr(e))
@@ -135,12 +136,12 @@ def init(current):
                                 uid=hdata['user'],
                                 pwd=hdata['password']) as conn:
                 with conn.cursor() as cur:
-                    cur.execute("""select dbo.toGuidString(a.[id]) as [id], dv.[value] as [val]
+                    cur.execute(f"""select dbo.toGuidString(a.[id]) as [id], dv.[value] as [val]
 from [application] as a
 inner join [device] as dv on a.[person] = dv.[record] and dv.[type] = 'campus_email' and dv.[rank] = 1
-where exists (select * from [checklist] where a.[id] = [record] and [active] = 1 and [template] in ('9ab2e6d6-dc68-4301-a2f3-e140effd06ba', 'db6d22f8-4ef6-4a3d-9828-9ae3846333d0', '15749872-e53e-44ee-9646-02b180c47601', 'a7afa8f4-44c7-419c-966a-617d15829b6f', 'f968c5ea-96c2-44d3-ae5e-93cfc0140a16'))
+where exists (select * from [checklist] where a.[id] = [record] and [active] = 1 and [template] in ({', '.join(['?'] * len(hdata['templates']))}))
 and a.[person] not in (select [record] from [tag] where [tag] = 'test')
-order by 2, 1""")
+order by 2, 1""", hdata['templates'])
                     fc = 0
                     while True:
                         rows = cur.fetchmany(500)
