@@ -49,30 +49,31 @@ def fetch(current, last):
             # Request data
             start = dt.datetime.strftime(dt.datetime.strptime(last, '%Y-%m-%dT%H:%M:%S%z'), '%Y-%m-%dT%H:%M:%S')
             download_paths = list()
-            for module in hdata['modules']:
-                log(f"Request for data begun for module {module}")
-                endpoint = hdata['data_url'].replace('{module}', module)
-                params = {
-                    'start': start,
-                    'timeZone': 'Eastern'
-                }
-                response = requests.get(f"{endpoint}", headers=headers, params=params)
-                if response.ok:
-                    data = response.json()['data']
-                    if data:
-                        if not isinstance(data, list):
-                            data = [data]
-                        download_path = PurePath(hdata['dest_dir']).joinpath(f"comevo_{module}_{current.strftime('%Y%m%d%H%M%S')}.json")
-                        print(f'Writing file to `{download_path}`.')
-                        with open(download_path, 'w') as f:
-                            json.dump({'data': data}, f, indent=2)
-                        log(f'Download to `{download_path}` successful')
-                        download_paths.append(download_path)
+            for group, modules in hdata['modules'].items():
+                for module in modules:
+                    log(f"Request for data begun for module {module}")
+                    endpoint = hdata['data_url'].replace('{module}', module)
+                    params = {
+                        'start': start,
+                        'timeZone': 'Eastern'
+                    }
+                    response = requests.get(f"{endpoint}", headers=headers, params=params)
+                    if response.ok:
+                        data = response.json()['data']
+                        if data:
+                            if not isinstance(data, list):
+                                data = [data]
+                            download_path = PurePath(hdata['dest_dir']).joinpath(f"comevo_{group}_{module}_{current.strftime('%Y%m%d%H%M%S')}.json")
+                            print(f'Writing file to `{download_path}`.')
+                            with open(download_path, 'w') as f:
+                                json.dump({'data': data}, f, indent=2)
+                            log(f'Download to `{download_path}` successful')
+                            download_paths.append(download_path)
+                        else:
+                            log('No records returned; no file created')
                     else:
-                        log('No records returned; no file created')
-                else:
-                    raise requests.RequestException(
-                        f"There was an error retrieving data with status code {response.status_code}.\n{response.content}")
+                        raise requests.RequestException(
+                            f"There was an error retrieving data with status code {response.status_code}.\n{response.content}")
             return download_paths
         except (OSError,
                 json.JSONDecodeError,
