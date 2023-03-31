@@ -12,6 +12,13 @@ import sqlite3
 from pathlib import PurePath
 from support import *
 
+if 'HOME' in os.environ:
+    PATH = PurePath(os.environ['HOME']).joinpath('.orn_fetch')
+else:
+    PATH = PurePath(os.environ['HOMEDRIVE'] + os.environ['HOMEPATH']).joinpath('.orn_fetch')
+with open(PATH.joinpath('groups.json')) as f:
+    GDATA = json.load(f)
+
 
 def fetch(current, last):
     """
@@ -20,16 +27,11 @@ def fetch(current, last):
     :return: A list of strings equal to the names of newly written data files or None if not successful
     """
     try:
-        if 'HOME' in os.environ:
-            hpath = PurePath(os.environ['HOME'])
-        else:
-            hpath = PurePath(os.environ['HOMEDRIVE'] + os.environ['HOMEPATH'])
-        hpath = hpath.joinpath('.orn_fetch', 'api.json')
-        with open(hpath) as file:
+        path = PATH.joinpath('api.json')
+        with open(path) as file:
             hdata = json.load(file)
         if not validate_keys(hdata, ('auth_url',
                                      'data_url',
-                                     'modules',
                                      'dest_dir',
                                      'username',
                                      'api_key')):
@@ -48,9 +50,9 @@ def fetch(current, last):
 
             # Request data
             start = dt.datetime.strftime(dt.datetime.strptime(last, '%Y-%m-%dT%H:%M:%S%z'), '%Y-%m-%dT%H:%M:%S')
-            download_paths = list()
-            for group, modules in hdata['modules'].items():
-                for module in modules:
+            downloads = list()
+            for group in GDATA:
+                for module in GDATA[group]['modules']:
                     log(f"Request for data begun for module {module}")
                     endpoint = hdata['data_url'].replace('{module}', module)
                     params = {
@@ -68,13 +70,13 @@ def fetch(current, last):
                             with open(download_path, 'w') as f:
                                 json.dump({'data': data}, f, indent=2)
                             log(f'Download to `{download_path}` successful')
-                            download_paths.append(download_path)
+                            downloads.append((group, download_path))
                         else:
                             log('No records returned; no file created')
                     else:
                         raise requests.RequestException(
                             f"There was an error retrieving data with status code {response.status_code}.\n{response.content}")
-            return download_paths
+            return downloads
         except (OSError,
                 json.JSONDecodeError,
                 requests.RequestException,
@@ -98,19 +100,14 @@ def init(current):
     :return: A three-tuple comprised of the connection, cursor, and string filename for the locally initiated SQLite database
     """
     try:
-        if 'HOME' in os.environ:
-            hpath = PurePath(os.environ['HOME'])
-        else:
-            hpath = PurePath(os.environ['HOMEDRIVE'] + os.environ['HOMEPATH'])
-        hpath = hpath.joinpath('.orn_fetch', 'connect.json')
-        with open(hpath) as file:
+        path = PATH.joinpath('connect.json')
+        with open(path) as file:
             hdata = json.load(file)
         if not validate_keys(hdata, ('driver',
                                      'host',
                                      'database',
                                      'user',
-                                     'password',
-                                     'templates')):
+                                     'password')):
             raise KeyError('JSON file malformed; provide necessary header data exactly.')
     except (KeyError, OSError, json.JSONDecodeError) as e:
         plog(repr(e))
@@ -124,9 +121,9 @@ def init(current):
 
             lcur.execute('DROP TABLE IF EXISTS main')
             lconn.commit()
-            lcur.execute("""CREATE TABLE main (id text, val text)""")
+            lcur.execute("""CREATE TABLE main (id text, grp text, val text)""")
             lconn.commit()
-            lcur.execute('CREATE INDEX m ON main (id, val)')
+            lcur.execute('CREATE INDEX m ON main (id, grp, val)')
             lconn.commit()
 
             # Retrieve data from SQL Server database
@@ -137,20 +134,21 @@ def init(current):
                                 uid=hdata['user'],
                                 pwd=hdata['password']) as conn:
                 with conn.cursor() as cur:
-                    cur.execute(f"""select dbo.toGuidString(a.[id]) as [id], dv.[value] as [val]
+                    for group in GDATA:
+                        cur.execute(f"""select dbo.toGuidString(a.[id]) as [id], ? as [grp], dv.[value] as [val]
 from [application] as a
 inner join [device] as dv on a.[person] = dv.[record] and dv.[type] = 'campus_email' and dv.[rank] = 1
-where exists (select * from [checklist] where a.[id] = [record] and [active] = 1 and [template] in ({', '.join(['?'] * len(hdata['templates']))}))
+where exists (select * from [checklist] where a.[id] = [record] and [active] = 1 and [template] in ({', '.join(['?'] * len(GDATA[group]['checklists']))}))
 and a.[person] not in (select [record] from [tag] where [tag] = 'test')
-order by 2, 1""", hdata['templates'])
-                    fc = 0
-                    while True:
-                        rows = cur.fetchmany(500)
-                        if not rows:
-                            break
-                        lcur.executemany('INSERT INTO main VALUES (?, ?)', rows)
-                        lconn.commit()
-                        fc += 1
+order by 2, 1""", (group, *GDATA[group]['checklists']))
+                        fc = 0
+                        while True:
+                            rows = cur.fetchmany(500)
+                            if not rows:
+                                break
+                            lcur.executemany('INSERT INTO main VALUES (?, ?, ?)', rows)
+                            lconn.commit()
+                            fc += 1
             conn.close()
 
             # Return local database connection, cursor, and filename
@@ -163,21 +161,21 @@ order by 2, 1""", hdata['templates'])
     return None
 
 
-def replace(paths, cur):
+def replace(pairs, cur):
     """
     Read and replace file data
 
-    :param paths: Paths to downloaded data files for value replacement
+    :param pairs: Iterable of two-tuples of the form (GROUP, PATH), where GROUP is the group name and PATH is a corresponding data file
     :param cur: An open cursor to the local SQLite database
     :return: None
     """
     try:
         log('Replacing file values for downloaded files')
-        for path in paths:
+        for (group, path) in pairs:
             with open(path) as f:
                 data = json.load(f)
                 for index, entry in enumerate(data['data']):
-                    cur.execute("select [id] from [main] where [val] = ?", [entry['attributes']['organizationIdValue']])
+                    cur.execute("select [id] from [main] where [grp] = ? and [val] = ?", (group, entry['attributes']['organizationIdValue']))
                     result = cur.fetchone()
                     if result:
                         data['data'][index]['attributes']['organizationIdValue'] = result[0]
